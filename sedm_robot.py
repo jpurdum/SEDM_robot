@@ -2675,9 +2675,9 @@ class SEDm:
                                             name=name,
                                             epoch=epoch)
                     logger.info("ocs.tel_move(RC) status:\n%s", ret)
-                    if "-3:" in ret:
+                    if "-3:" in ret['error']:
                         send_alert_email("Telescope move command for "
-                                         "rc science sequence failed")
+                                         "rc science sequence failed. Check OCS Server.")
                     if 'data' not in ret:
                         continue
                 for k in range(int(obs_repeat_filter[j])):
@@ -2766,9 +2766,9 @@ class SEDm:
                                     ra_rate=ra_rate, dec_rate=dec_rate,
                                     motion_flag=motion_flag, epoch=epoch)
             logger.info("ocs.tel_move status:\n%s", ret)
-            if "-3:" in ret:
+            if "-3:" in ret['error']:
                 send_alert_email("Telescope move command for "
-                                 "ifu acquisition sequence failed")
+                                 "ifu acquisition sequence failed. Check OCS Server.")
 
             logger.info("sedm.py: Pausing for 1s until telescope "
                         "is done settling")
