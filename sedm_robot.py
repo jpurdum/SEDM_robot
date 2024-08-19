@@ -353,6 +353,7 @@ class SEDm:
 
                 if rc_tries > 180:
                     send_alert_email("RC not achieving temperature lock.")
+                    rc_tries = 1
 
                 logger.info("RC temp, lock = %.1f, %s", rc_temp, rc_lock)
 
@@ -383,6 +384,7 @@ class SEDm:
 
                 if ifu_tries > 180:
                     send_alert_email("IFU not achieving temperature lock.")
+                    ifu_tries = 1
 
                 logger.info("IFU temp, lock = %.1f, %s", ifu_temp, ifu_lock)
 
