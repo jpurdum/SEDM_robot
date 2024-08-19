@@ -91,6 +91,8 @@ lamps_done_file = os.path.join(os.path.join(status_file_dir, "lamps_done.txt"))
 status_dict['lamps'] = lamps_done_file
 logger.info("Starting Logger: Logger file is %s", 'sedm_robot.log')
 
+# Don't send too many emails!
+email_count = 0
 
 def uttime(offset=0):
     if not offset:
@@ -114,18 +116,22 @@ def send_alert_email(body):
     # With EmailMessage send alert email
     dt = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    msg = EmailMessage()
-    msg['To'] = alert_cfg['mail_list']
-    msg['Subject'] = "SEDM-P60 ALERT!"
-    msg['From'] = alert_cfg['nemea_email']
-    msg.set_content(dt + ":  " + body)
+    global email_count
+    email_count += 1
+    if email_count < 11:
+        msg = EmailMessage()
+        msg['To'] = alert_cfg['mail_list']
+        msg['Subject'] = "SEDM-P60 ALERT!"
+        msg['From'] = alert_cfg['nemea_email']
+        msg.set_content(dt + ":  " + body)
 
-    # local SMTP server
-    with smtplib.SMTP("smtp-server.astro.caltech.edu") as send:
-        send.send_message(msg)
+        # local SMTP server
+        with smtplib.SMTP("smtp-server.astro.caltech.edu") as send:
+            send.send_message(msg)
 
-    logger.info("Email alert!: %s", body)
-
+        logger.info("Email alert!: %s", body)
+    else:
+        logger.info("Email limit exceeded. Alert!!: %s", body)
 
 def iso_to_epoch(iso_time, epoch_year=False):
     from datetime import datetime
