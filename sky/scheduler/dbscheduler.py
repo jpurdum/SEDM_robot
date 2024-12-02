@@ -70,7 +70,7 @@ class Scheduler:
             "p.designator, p.name, p.group_id, p.pi,\n"
             "p.time_allocated, r.priority, p.inidate,\n"
             "p.enddate, pe.mjd0, pe.phasedays, pe.phi,\n"
-            "r.phase, r.sampletolerance\n"
+            # "r.phase, r.sampletolerance, r.ifu_stdstar\n"
             "FROM \"public\".request r\n"
             "INNER JOIN \"public\".\"object\" o ON (r.object_id = o.id)\n"
             "INNER JOIN \"public\".users u ON (r.user_id = u.id)\n"
@@ -181,6 +181,7 @@ class Scheduler:
         rc = False
         rc_total = 0
         ifu_total = 0
+        # ifu_stdstar = row['ifu_stdstar']
 
         rc_filter_list = ['r', 'g', 'i', 'u']
         ifu_exptime = 0
@@ -212,6 +213,7 @@ class Scheduler:
                 'ifu': ifu,
                 'ifu_exptime': ifu_exptime,
                 'ifu_total': ifu_total + 47,
+                # 'ifu_stdstar': ifu_stdstar,
                 'rc': rc,
                 'rc_obs_dict': None,
                 'rc_total': 0,
@@ -263,6 +265,7 @@ class Scheduler:
             'ifu': ifu,
             'ifu_exptime': ifu_exptime,
             'ifu_total': ifu_total,
+            # 'ifu_stdstar': ifu_stdstar,
             'rc': rc,
             'rc_obs_dict': obs_dict,
             'rc_total': rc_total * repeat,

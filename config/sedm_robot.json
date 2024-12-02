@@ -12,6 +12,11 @@
             "exptime": 30,
             "readout": 1.0
         },
+        "dark": {
+            "N": 1,
+            "exptime": [1800],
+            "readout": 1.0
+        },
         "dome": {
             "N": 5,
             "exptime": [40],
@@ -24,6 +29,7 @@
         },
         "order": [
             "slow_bias",
+            "dark",
             "dome",
             "hg",
             "xe",

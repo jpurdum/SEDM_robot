@@ -215,7 +215,7 @@ class SEDm:
 
         self.calibration_id_dict = {
             'bias': 3, 'twilight': 4, 'hal': 5, 'hg': 13, 'xe': 12, 'cd': 14,
-            'standard': 15, 'GD50': 16, 'SA95-42': 17, 'HZ4': 18, 'LB227': 19,
+            'standard': 15, 'dark': 32, 'GD50': 16, 'SA95-42': 17, 'HZ4': 18, 'LB227': 19,
             'HZ2': 20, 'G191B2B': 21, 'BD+75d325': 22, 'Feige34': 23,
             'HZ44': 24, 'BD+33d2642': 25, 'G24-9': 26, 'BD+28d4211': 27,
             'G93-48': 28, 'BD+25d4655': 29, 'Feige110': 30, 'GD248': 31,
@@ -814,6 +814,81 @@ class SEDm:
 
         return {'elaptime': time.time() - start, 'data': img_list}
 
+    def take_dark(self, cam, N=1, startN=1, shutter='closed', exptime=1800, readout=2.0,
+                  generate_request_id=True, name='', save_as=None, test='',
+                  req_id=-999):
+        """
+
+        :param req_id:
+        :param readout:
+        :param exptime:
+        :param cam:
+        :param test:
+        :param save_as:
+        :param N:
+        :param shutter:
+        :param startN:
+        :param generate_request_id:
+        :param name:
+        :return:
+        """
+        # Pause condition to keep the IFU and RC cameras out of sync
+        # during calibrations.  Does not effect the efficiency of the
+        # system as a whole
+        time.sleep(2)
+
+        img_list = []
+        start = time.time()
+
+        if not name:
+            name = 'dark'
+
+        obj_id = self.calibration_id_dict['dark']
+
+        if generate_request_id:
+            ret = self.sky.get_calib_request_id(camera=cam.prefix()['data'],
+                                                N=N, exptime=exptime,
+                                                object_id=obj_id)
+            logger.info("sky.get_calib_request_id status:\n%s", ret)
+            if "data" in ret:
+                req_id = ret['data']
+
+        for img in range(startN, N + 1, 1):
+            logger.info("%d, %d", img, N)
+            if N != startN:
+                start = time.time()
+                do_stages = False
+                do_lamps = False
+            else:
+                do_stages = True
+                do_lamps = True
+            namestr = "%s %s of %s" % (name, img, N)
+            ret = self.take_image(cam, shutter=shutter, readout=readout,
+                                  name=namestr, start=start, test=test,
+                                  save_as=save_as, imgtype='dark',
+                                  objtype='Calibration', exptime=exptime,
+                                  object_ra="", object_dec="", email='',
+                                  p60prid=DEF_PROG, p60prpi='SEDm',
+                                  p60prnm='SEDm Calibration File',
+                                  obj_id=obj_id, req_id=req_id,
+                                  objfilter='NA', imgset='NA',
+                                  do_stages=do_stages, do_lamps=do_lamps,
+                                  is_rc=True, abpair=False)
+            logger.info("take_image(Dark) status:\n%s", ret)
+
+            if 'error' in ret:
+                logger.error("Bad image: error in return")
+            elif 'data' in ret:
+                img_list.append(ret['data'])
+            else:
+                logger.error("Bad image: no return")
+
+        if generate_request_id:
+            sky_ret = self.sky.update_target_request(req_id, status="COMPLETED")
+            logger.info("sky.update_target_request status:\n%s", sky_ret)
+
+        return {'elaptime': time.time() - start, 'data': img_list}
+
     def take_dome(self, cam, N=1, exptime=180, readout=2.0,
                   do_lamp=True, wait=True, obj_id=None,
                   shutter='normal', name='', test='',
@@ -1238,6 +1313,31 @@ class SEDm:
                 if make_files:
                     with open(status_dict['%s_slowbias' % cube], 'w') as file:
                         file.write('%s slow biases completed:%s' %
+                                   (cube.upper(), uttime()))
+
+        if 'dark' in cube_params[cube_type]['order']:
+            N = cube_params[cube_type]['dark']['N']
+            rdo = cube_params[cube_type]['dark']['readout']
+            exptime = cube_params[cube_type]['dark']['exptime']
+            files_completed = 0
+            if check_for_previous:
+                ret = self.sanity.check_for_files(camera=cube,
+                                                  keywords={'imgtype': 'dark',
+                                                            'adcspeed': rdo},
+                                                  data_dir=data_dir)
+                if 'data' in ret:
+                    files_completed = int(ret['data'])
+
+            if files_completed >= N or os.path.exists(status_dict['%s_dark'
+                                                                  % cube]):
+                logger.info("%s Darks already done" % cube.upper())
+            else:
+                N = N - files_completed
+                logger.info("Taking %d Dark images with exposure time %s for %s", N, exptime, cube)
+                self.take_dark(cam, N=N, exptime=exptime, readout=rdo)
+                if make_files:
+                    with open(status_dict['%s_dark' % cube], 'w') as file:
+                        file.write('%s Dark images completed:%s' %
                                    (cube.upper(), uttime()))
 
         if 'dome' in cube_params[cube_type]['order']:

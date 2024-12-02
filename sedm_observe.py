@@ -417,6 +417,9 @@ def run_observing_loop(do_focus=True, do_standard=True,
                 loop_count += 1
                 time.sleep(600)
                 continue
+            # If a standard star was requested, do that first
+            # if obsdict['obs_dict']['ifu_stdstar'] = True;
+                # print("testing for standard successful")
             # If it ends before morning twilight, do observations
             ret = robot.observe_by_dict(obsdict)
             print('observe_by_dict status:\n', ret)
