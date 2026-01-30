@@ -2472,6 +2472,10 @@ class SEDm:
             key_dict['non_sid_targ'] = False
         else:
             key_dict['non_sid_targe'] = obsdict['non_sid_targ']
+        if 'typedesig' not in obsdict:
+            break
+        else:
+            key_dict['typedesig'] = obsdict['typedesig']
 
         if 'guide_exptime' not in obsdict:
             key_dict['guide_exptime'] = 30
@@ -2485,6 +2489,7 @@ class SEDm:
 
         return {'elaptime': time.time() - start, 'data': key_dict}
 
+    # get observe_by_dict to look for typedesig and do 'e' or 'f' 
     def observe_by_dict(self, obsdict, move=True, run_acquisition_ifu=True,
                         run_acquisition_rc=False, guide=True, test="",
                         mark_status=True):
@@ -2527,6 +2532,41 @@ class SEDm:
         img_dict = {}
 
         pprint.pprint(obsdict)
+
+        # Is this a Solar System body?
+        if obsdict['typedesig'] and obdict['typedesig'] = 'e':
+            # write manualfile for neo observation using the IFU
+            
+            # Check solar analog exists in neo file
+            name = obsdict['name']
+            print("NEO name: %s" % name)
+            with open('~/qye/observable_neo.json') as f:
+                d = json.load(f)
+            for o in d['objects']:
+                if o['id'] == name:
+                    sol_name = o['solar_analog']['name'].replace(' ', '')
+                    print("Solar analog name: %s" % sol_name)
+                    key = 'loaded_to_sedm'
+                    if key in o:
+                        o[key] = 1
+                        print("Loaded to SEDM; will not observe again")
+                        with open("~/qye/observable_neo.json", "w") as f:
+                            json.dump(d, f)
+                else:
+                    return {'elaptime': time.time() - start,
+                            'error': 'Could not write manualfile'}
+            soldata = {"command": "ifu", "target": sol_name, 'exptime': 30, 'allocation_id': 20190326155547359}
+            solfile = "%s.json" % sol_name
+
+            exptime = obsdict['obs_dict']['ifu_exptime']
+            neodata = {"command": "nonsid_ifu", "target": name, 'exptime': exptime, 'allocation_id': 20190326155547359}
+            neofile = "%s.json" % name
+            
+            with open("~/robot/manual/%s" % neofile, "w") as f:
+                f.write(json.dumps(neodata))
+            with open("~/robot/manual/%s" % solfile, "w") as f:
+                f.write(json.dumps(soldata))
+            return {'elaptime': time.time() - start, 'Manual files loaded'}
 
         # Now see if target has an ifu component
         if obsdict['obs_dict']['ifu'] and self.run_ifu:
@@ -3273,12 +3313,14 @@ class SEDm:
                                     proper_motion=proper_motion)
         except ValueError as e:
             logger.error(str(e))
-            return False
+            eph = 0
+            pass
         except astroquery.exceptions.InvalidQueryError as e:
             logger.error(str(e))
-            return False
+            eph = 0
+            pass
 
-        if eph['Delta'][0] < 0.03:
+        if eph['Delta'][0] < 0.03 or eph=0:
             logger.info("Woah, this object is pretty nearby. "
                         "Better use JPL HORIZONS instead")
             try:
