@@ -23,6 +23,7 @@ import SEDM_robot_version as Version
 
 from astropy.time import Time, TimeDelta
 from astropy.utils.iers import conf
+from astroquery.jplhorizons import Horizons
 conf.auto_max_age = None
 
 
@@ -70,7 +71,7 @@ class Scheduler:
             "p.designator, p.name, p.group_id, p.pi,\n"
             "p.time_allocated, r.priority, p.inidate,\n"
             "p.enddate, pe.mjd0, pe.phasedays, pe.phi,\n"
-            # "r.phase, r.sampletolerance, r.ifu_stdstar\n"
+            "r.phase, r.sampletolerance\n" # , r.ifu_stdstar\n"
             "FROM \"public\".request r\n"
             "INNER JOIN \"public\".\"object\" o ON (r.object_id = o.id)\n"
             "INNER JOIN \"public\".users u ON (r.user_id = u.id)\n"
@@ -345,7 +346,7 @@ class Scheduler:
                        do_standard=True, target_list=None,
                        return_type='html', sort_columns=('priority',
                                                          'start_alt'),
-                       sort_order=(False, False), ):
+                       sort_order=(False, False), do_neo=False):
         """
 
         :param start_time:
@@ -371,6 +372,13 @@ class Scheduler:
 
         self.running_obs_time = start_time
 
+        # Are we observing NEOs?
+        if do_neo:
+            print("do_neo active")
+            # Read in observable.json from ~/qye
+            ret = self.populate_neo_request()
+            print("do_neo finished on %s" % ret['data']['object_id'])
+
         if not isinstance(target_list, pd.DataFrame) and not target_list:
             print("sn: Making a new target list for night simulation")
             ret = self.get_active_targets()
@@ -379,7 +387,8 @@ class Scheduler:
             else:
                 return ret
 
-            target_list = self.initialize_targets(targets)['data']
+            target_list = self.initialize_targets(targets, do_neo=do_neo)['data']
+            print("got target_list: %s" % target_list)
 
         if len(target_list) == 0:
             return {'data': False, 'elaptime': time.time() - start}
@@ -435,8 +444,9 @@ class Scheduler:
                                                 obsdatetime=current_time,
                                                 update_coords=False,
                                                 return_type=return_type,
-                                                do_sort=False)
-
+                                                do_sort=False,
+                                                do_neo=do_neo)
+            print("got next observable target")
             # targets = self.remove_setting_targets(
             #       targets, start_time=current_time, end_time=end_time)
 
@@ -522,10 +532,14 @@ class Scheduler:
 
         return {"data": df, "elaptime": time.time() - start}
 
-    def initialize_targets(self, target_df_in, obstime=''):
+    def initialize_targets(self, target_df_in, obstime='', do_neo=False):
         start = time.time()
-        # filter out all non-fixed typedesig objects
-        target_df = target_df_in[target_df_in['typedesig'] == 'f']
+        # filter for proper type designation
+        if do_neo:
+            target_df = target_df_in[target_df_in['typedesig'] == 'f' & target_df_in['typedesig'] == 'e']
+            print("got target_df in initialize_targets")
+        else:
+            target_df = target_df_in[target_df_in['typedesig'] == 'f']
 
         target_df['SkyCoords'] = False
         target_df['SkyCoords'] = SkyCoord(ra=target_df['ra'],
@@ -542,6 +556,7 @@ class Scheduler:
         target_df['start_alt'] = target_df.apply(self._set_start_altaz,
                                                  axis=1)
         target_df['end_alt'] = target_df.apply(self._set_end_altaz, axis=1)
+        # astroplan does not have setup for NonFixedTarget, so we will pretend typedesig 'e' are fixed
         target_df['fixed_object'] = target_df.apply(self._set_fixed_targets,
                                                     axis=1)
         target_df['start_ha'] = target_df.apply(self._set_start_ha, axis=1)
@@ -616,7 +631,7 @@ class Scheduler:
                                    sort_columns=('priority', 'set_time'),
                                    sort_order=(False, False), save=False,
                                    save_as='',
-                                   check_end_of_night=True, update_coords=True):
+                                   check_end_of_night=True, update_coords=True, do_neo=False):
         """
 
         :return:
@@ -640,7 +655,7 @@ class Scheduler:
             else:
                 return ret
 
-            target_list = self.initialize_targets(targets)['data']
+            target_list = self.initialize_targets(targets, do_neo=do_neo)['data']
 
         # no targets, bail
         if len(target_list) == 0:
@@ -708,6 +723,7 @@ class Scheduler:
 
             # Are we a 'fixed' target?
             if row.typedesig == 'f':
+                print("fixed object")
                 print("gnot:", row.objname)
                 # Are we observable within given constraints?
                 if astroplan.is_observable(constraint, self.obs_site_plan,
@@ -830,6 +846,132 @@ class Scheduler:
                                                             ','.join(reas))
                         elif return_type == 'json' and len(num) >= 1:
                             rej_html += ','.join(num)
+            
+            elif row.typedesig == 'e':
+                print("eliptical object")
+                print("gnot:", row.objname)
+                # Are we observable within given constraints?
+                if astroplan.is_observable(constraint, self.obs_site_plan,
+                                           row.fixed_object,
+                                           times=[start, finish],
+                                           time_grid_resolution=0.1 * u.hour):
+
+                    s_ha = float(row.start_ha.to_string(unit=u.hour,
+                                                        decimal=True))
+                    e_ha = float(row.end_ha.to_string(unit=u.hour,
+                                                      decimal=True))
+                    s_air = float(row.start_airmass)
+                    e_air = float(row.end_airmass)
+                    if s_ha > 12.:
+                        s_ha_ew = -(24. - s_ha)
+                    else:
+                        s_ha_ew = s_ha
+
+                    if e_ha > 12.:
+                        e_ha_ew = -(24. - e_ha)
+                    else:
+                        e_ha_ew = e_ha
+
+                    # Skip targets that start or end outside HA range
+                    if 18.75 > s_ha > 5.25:
+                        print("gnot: HA start outside range: %.4f" % s_ha_ew)
+                        continue
+                    if 18.75 > e_ha > 5.25:
+                        print("gnot: HA end outside range: %.4f" % e_ha_ew)
+                        continue
+                    # Skip extreme airmass at either end
+                    if s_air > 3.5:
+                        print("gnot: Airmass start outside range: %.3f" % s_air)
+                        continue
+                    if e_air > 3.5:
+                        print("gnot: Airmass end outside range: %.3f" % e_air)
+                        continue
+                    if do_fwhm:
+                        # Skip target if curr FWHM more that max FWHM requested
+                        cur_fwhm = self.get_recent_fwhm()
+                        if cur_fwhm['data'] != -1 and \
+                                cur_fwhm['data'] > max(5, row.max_fwhm):
+                            print("gnot: Current FWHM (%.3f) > Requested FWHM "
+                                  "(%.3f)" % (cur_fwhm['data'], row.max_fwhm))
+                            continue
+
+                    # Here is our target!
+                    moon_coords = get_moon(obsdatetime,
+                                           location=self.obs_site_plan.location)
+                    tc = row.SkyCoords
+                    moon_dist = moon_coords.separation(tc).deg
+                    print("gnot: %s %.1f %.6f %.6f %.3f %.3f %.2f %s %s " %
+                          (row.objname, row.priority, row.ra, row.dec,
+                           row.start_airmass, row.end_airmass, moon_dist,
+                           row.start_ha, row.end_ha), row.start_obs)
+                    if return_type == 'html':
+                        if row.obs_seq['rc']:
+                            rc_seq = row.obs_seq['rc_obs_dict']['obs_order'],
+                            rc_exptime = row.obs_seq['rc_obs_dict'][
+                                             'obs_exptime'],
+                        else:
+                            rc_seq = 'NA'
+                            rc_exptime = 'NA'
+
+                        html = self.tr_row.substitute(
+                            {'allocation': row.allocation_id,
+                             'obstime': start.iso,
+                             'objname': row.objname,
+                             'priority': row.priority,
+                             'project': row.designator,
+                             'ra': "%.7f" % row.ra,
+                             'dec': "%+.7f" % row.dec,
+                             'start_airmass': "%.4f" % row.start_airmass,
+                             'end_airmass': "%.4f" % row.end_airmass,
+                             'moon_dist': "%.2f" % moon_dist,
+                             'ifu_exptime': row.obs_seq['ifu_exptime'],
+                             'rc_seq': rc_seq,
+                             'rc_exptime': rc_exptime,
+                             'total': row.obs_seq['total'],
+                             'request_id': row.req_id,
+                             'rejects': rej_html}
+                        )
+                        return row.req_id, (row.obs_seq, html)
+                    elif return_type == 'json':
+                        targ = self._convert_row_to_json(row)
+
+                        if save:
+                            if not save_as:
+                                save_as = os.path.join(
+                                    self.target_dir,
+                                    "next_target_%s.json" %
+                                    datetime.datetime.utcnow().strftime(
+                                        "%Y%m%d_%H_%M_%S"))
+
+                            with open(save_as, 'w') as outfile:
+                                outfile.write(json.dumps(targ))
+
+                        return {"elaptime": time.time() - st, "data": targ}
+                    else:
+                        return row.req_id, row.obs_seq
+                else:
+                    print("gnot: Not observable, priority = %d" % row.priority)
+                    if row.priority >= 4:
+                        count = 1
+                        num = []
+                        reas = []
+                        for con in constraint:
+                            ret = astroplan.is_observable(
+                                [con], self.obs_site_plan,
+                                row.fixed_object, times=[start, finish],
+                                time_grid_resolution=0.1 * u.hour)
+                            # print(ret, con)
+                            if not ret:
+                                num.append(str(count))
+                                reas.append(cons[count])
+                                print("gnot:", ret, cons[count])
+                            count += 1
+                        if return_type == 'html' and len(num) >= 1:
+                            rej_html += """%s: %s<br>""" % (row.objname,
+                                                            ','.join(reas))
+                        elif return_type == 'json' and len(num) >= 1:
+                            rej_html += ','.join(num)
+
             sys.stdout.flush()
 
         if return_type == 'json':
@@ -1022,9 +1164,62 @@ class Scheduler:
                 print(message)
                 return object_id
 
+    def populate_neo_request(update=True):
+        # populate db with observable_neo.json in ~/qye
+        with open('~/qye/observable_neo.json') as f:
+            data = json.load(f)
+
+        for objct in d['objects']:
+            # has it been observed?
+            if objct['loaded_to_sedm'] != 0:
+                continue
+            else:
+                if 'horizon_id' in objct:
+                    name = objct['horizon_id']
+                    print("using horizon ID instead")
+                else:
+                    name = objct['id']
+             
+            # Make sure name is machine-readable
+            if name.count('_') >= 2:
+                cname = name.replace('_', '/', 1)
+                cname = cname.replace('_', ' ')
+            elif name.count('_') == 1:
+                cname = name.replace('_', ' ')
+            else:
+                cname = name
+            print("cname is %s" % cname)
+            mag = objct['vmag']
+            if 10.0 <= mag < 12.0:
+                exptime = 300
+            elif 12.0 <= mag < 13.0:
+                exptime = 600
+            elif 13.0 <= mag < 15.0:
+                exptime = 900
+            elif 15.0 <= mag < 18.0:
+                exptime = 1800
+            else:
+                exptime = 120
+            print("using exptime %s" % exptime)
+
+            # Get ephemeris for this object using JPL Horizons
+            ephob = Horizons(id=cname, location='I41')
+            eph = ephobj.ephemerides()
+            if len(eph) == 0:
+                print("Could not produce ephemeris for %s" % cname)
+
+            ret = self.get_manual_request_id(name=cname, ra=eph['RA'][0], dec=eph['DEC'][0],
+                                             priority=objct['priority'], exptime = exptime,
+                                             allocation_id=20190326155547359, typedesig='e',
+                                             update=update)
+
+            print("get_manual_request_id status: %s" % ret)
+            return ret
+
+
     def get_manual_request_id(self, name="", typedesig="f", ra=None, dec=None,
-                              epoch=2000., magnitude=None, exptime=180,
-                              allocation_id="", obs_seq='{1ifu}'):
+                              epoch=2000., magnitude=None, priority=-1, exptime=180,
+                              allocation_id="", obs_seq='{1ifu}', update=False):
         """
         :param name:
         :param typedesig:
@@ -1053,7 +1248,10 @@ class Scheduler:
                 if obj[1].lower() == name.lower():
                     object_id = obj[0]
                     break
-
+                if update:
+                    pardic = {'id': object_id, 'ra': ra, 'dec': dec}
+                    resp = self.ph_db.update_object(pardic)
+                    print("Update manual object status: %s" % resp)
         if not allocation_id:
             allocation_id = '20211011220000019'
             p60prid = '2021B-calib'
@@ -1071,7 +1269,7 @@ class Scheduler:
             p60prpi = db_ret[1]
 
         start_date = datetime.datetime.utcnow()
-        end_date = start_date + datetime.timedelta(days=1)
+        end_date = start_date + datetime.timedelta(days=0.5)
         request_dict = {
             'obs_seq': obs_seq,
             'exptime': '{%s}' % int(exptime),
@@ -1079,7 +1277,7 @@ class Scheduler:
             'marshal_id': '-1',
             'user_id': 2,
             'allocation_id': allocation_id,
-            'priority': '-1',
+            'priority': priority,
             'inidate': start_date.strftime("%Y-%m-%d"),
             'enddate': end_date.strftime("%Y-%m-%d"),
             'maxairmass': '2.5',
@@ -1213,7 +1411,7 @@ if __name__ == "__main__":
     # print(x.get_next_observable_target(return_type='json', do_moon_sep=False))
     # time.sleep(111)
     # print(x.simulate_night())
-    r = sched.simulate_night(do_focus=True, do_standard=True)
+    r = sched.simulate_night(do_focus=True, do_standard=True, do_neo=False)
     data = open(scheduler_path, 'w')
     data.write(r)
     data.close()
