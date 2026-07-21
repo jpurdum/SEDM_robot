@@ -4,6 +4,7 @@ from observatory.server import ocs_client
 from sky.server import sky_client
 from sanity.server import sanity_client
 from utils import sedmHeader, rc_filter_coords, rc_focus
+from astroquery.simbad import Simbad
 import os
 import sys
 import json
@@ -210,6 +211,7 @@ class SEDm:
         self.p60prid = '2019B-NoID'
         self.obj_id = -1
         self.req_id = -1
+        self.typedesig = 'f'
         self.guider_list = []
         self.lamp_wait_time = dict(xe=120, cd=420, hg=120, hal=120)
 
@@ -2471,9 +2473,10 @@ class SEDm:
         if 'non_sid_targ' not in obsdict:
             key_dict['non_sid_targ'] = False
         else:
-            key_dict['non_sid_targe'] = obsdict['non_sid_targ']
+            key_dict['non_sid_targ'] = obsdict['non_sid_targ']
+
         if 'typedesig' not in obsdict:
-            break
+            key_dict['typedesig'] = self.typedesig
         else:
             key_dict['typedesig'] = obsdict['typedesig']
 
@@ -2489,7 +2492,6 @@ class SEDm:
 
         return {'elaptime': time.time() - start, 'data': key_dict}
 
-    # get observe_by_dict to look for typedesig and do 'e' or 'f' 
     def observe_by_dict(self, obsdict, move=True, run_acquisition_ifu=True,
                         run_acquisition_rc=False, guide=True, test="",
                         mark_status=True):
@@ -2534,40 +2536,92 @@ class SEDm:
         pprint.pprint(obsdict)
 
         # Is this a Solar System body?
-        if obsdict['typedesig'] and obdict['typedesig'] = 'e':
+        logger.info("Next object has typedesig: %s" % kargs['typedesig'])
+        if kargs['typedesig'] == 'e':
             # write manualfile for neo observation using the IFU
-            
+            logger.info("Writing NEO file for typedesig 'e'")
             # Check solar analog exists in neo file
             name = obsdict['name']
-            print("NEO name: %s" % name)
-            with open('~/qye/observable_neo.json') as f:
+            req_id = obsdict['req_id']
+            logger.info("NEO name: %s" % name)
+            with open('/data/sedmdrp/qye/observable_neo.json') as f:
                 d = json.load(f)
+                if len(d['objects']) == 0:
+                    sky_ret = self.sky.update_target_request(req_id,
+                                                             status="COMPLETED")
+                    logger.info("NEO file now empty. Switching to main belt object")
+                    with open('/data/sedmdrp/qye/observable_mba.json') as f:
+                        d = json.load(f)
+                        d['objects'] = [d['objects'][0]]
+                    mbaflag = True
+                    logger.info("MBA Flag true")
+                else:
+                    mbaflag = False
             for o in d['objects']:
-                if o['id'] == name:
-                    sol_name = o['solar_analog']['name'].replace(' ', '')
-                    print("Solar analog name: %s" % sol_name)
+                if len(o['solar_analogs']) > 0:
+                    gaia_id1 = o['solar_analogs'][0]['name'].replace(' ', '')
+                    sol_name1 = "Gaia_DR3_" + gaia_id1
+                    gaia_id2 = o['solar_analogs'][1]['name'].replace(' ', '')
+                    sol_name2 = "Gaia_DR3_" + gaia_id2
+
+                    namelist1 = Simbad.query_objectids(sol_name1)
+                    for x in namelist1:
+                        if x[0][0:2] == 'BD':
+                            sol_name1 = x[0].replace(' ', '_')
+                        elif x[0][0:2] == '2M':
+                            sol_name1 = x[0].replace(' ', '_')
+                        #else:
+                        #    logger.info("No BD or 2MASS name for the solar analog, continuing")
+                        #    return {'elaptime': time.time() - start,
+                        #    'error': 'Solar analog name failure'}
+                    namelist2 = Simbad.query_objectids(sol_name2)
+                    for x in namelist2:
+                        if x[0][0:2] == 'BD':
+                            sol_name2 = x[0].replace(' ', '_')
+                        elif x[0][0:2] == '2M':
+                            sol_name2 = x[0].replace(' ', '_')
+                        #else:
+                        #    logger.info("No BD or 2MASS name for the solar analog, continuing")
+                        #    return {'elaptime': time.time() - start,
+                        #    'error': 'Solar analog name failure'}
+
+                    logger.info("Solar analog names: %s, %s" % (sol_name1,sol_name2))
                     key = 'loaded_to_sedm'
                     if key in o:
                         o[key] = 1
-                        print("Loaded to SEDM; will not observe again")
-                        with open("~/qye/observable_neo.json", "w") as f:
-                            json.dump(d, f)
+                        logger.info("Loaded to SEDM; will not observe again")
+                        if mbaflag:
+                            with open("/data/sedmdrp/qye/observable_neo.json", "w") as f:
+                                json.dump(d, f)
+                        else:
+                            with open("/data/sedmdrp/qye/observable_mba.json", "w") as f:
+                                json.dump(d, f)
                 else:
-                    return {'elaptime': time.time() - start,
-                            'error': 'Could not write manualfile'}
-            soldata = {"command": "ifu", "target": sol_name, 'exptime': 30, 'allocation_id': 20190326155547359}
-            solfile = "%s.json" % sol_name
+                    logger.info("No Solar Analog. Skipping")
+                    sky_ret = self.sky.update_target_request(req_id,
+                                                             status="FAILURE")
+                    #return {'elaptime': time.time() - start,
+                    #       'error': 'Could not write manualfile, marked failure'}
+                    continue
+            soldata1 = {"command": "ifu", "target": sol_name1, 'exptime': 30, 'allocation_id': 20190326155547359}
+            solfile1 = "0%s.json" % sol_name1.replace(' ', '_')
+            soldata2 = {"command": "ifu", "target": sol_name2, 'exptime': 30, 'allocation_id': 20190326155547359}
+            solfile2 = "z%s.json" % sol_name2.replace(' ', '_')
 
             exptime = obsdict['obs_dict']['ifu_exptime']
             neodata = {"command": "nonsid_ifu", "target": name, 'exptime': exptime, 'allocation_id': 20190326155547359}
-            neofile = "%s.json" % name
+            neofile = "%s.json" % name.replace(' ', '_')
             
-            with open("~/robot/manual/%s" % neofile, "w") as f:
-                f.write(json.dumps(neodata))
-            with open("~/robot/manual/%s" % solfile, "w") as f:
-                f.write(json.dumps(soldata))
+            #for nemea
+            #with open("~/robot/manual/%s" % neofile, "w") as f:
+            #    f.write(json.dumps(neodata))
+            #with open("~/robot/manual/%s" % solfile1, "w") as f:
+            #    f.write(json.dumps(soldata1))
+            #with open("~/robot/manual/%s" % solfile2, "w") as f:
+            #    f.write(json.dumps(soldata2))
             return {'elaptime': time.time() - start, 'Manual files loaded'}
-
+        else:
+            pass
         # Now see if target has an ifu component
         if obsdict['obs_dict']['ifu'] and self.run_ifu:
             ret = self.run_ifu_science_seq(
@@ -2621,7 +2675,7 @@ class SEDm:
                             guide=True, guide_shutter='normal', move=True,
                             guide_exptime=30,
                             retry_on_failed_astrometry=False,
-                            mark_status=True, status_file=''):
+                            mark_status=True, status_file='', typedesig=''):
 
         start = time.time()
 
@@ -2742,7 +2796,7 @@ class SEDm:
                            non_sid_targ=False, move_during_readout=True,
                            abpair=False, move=True,
                            retry_on_failed_astrometry=False,
-                           mark_status=True, status_file=''):
+                           mark_status=True, status_file='', typedesig=''):
         start = time.time()
 
         # unused parameters
@@ -3315,10 +3369,10 @@ class SEDm:
             logger.error(str(e))
             eph = 0
             pass
+
         except astroquery.exceptions.InvalidQueryError as e:
             logger.error(str(e))
-            eph = 0
-            pass
+            return False
 
         if eph['Delta'][0] < 0.03 or eph=0:
             logger.info("Woah, this object is pretty nearby. "
@@ -3730,6 +3784,15 @@ class SEDm:
                                 coords.to_string("hmsdms", sep=":"))
                 logger.info("decimal deg: %f, %f", RA, DEC)
 
+                if 'ra_rate' in obsdict and 'dec_rate' in obsdict:
+                    ra_rate = obsdict['ra_rate']
+                    dec_rate = obsdict['dec_rate']
+                    motion_flag = "1"
+                else:
+                    ra_rate = 0
+                    dec_rate = 0
+                    motion_flag = "0"
+
                 if 'allocation_id' in obsdict:
                     alloc_id = obsdict['allocation_id']
                 else:
@@ -3760,7 +3823,8 @@ class SEDm:
 
             ret = self.run_ifu_science_seq(
                 self.ifu, name=obsdict['target'], imgtype='Science',
-                exptime=obsdict['exptime'], ra=RA, dec=DEC, readout=1.0,
+                exptime=obsdict['exptime'], ra=RA, dec=DEC,
+                ra_rate = ra_rate, dec_rate = dec_rate, readout=1.0,
                 p60prid=p60prid, p60prpi=p60prpi, email='',
                 p60prnm=p60prnm, req_id=req_id,
                 obj_id=obj_id, objfilter='ifu',
@@ -3768,7 +3832,7 @@ class SEDm:
                 guide_readout=2.0, move_during_readout=True, abpair=False,
                 guide_shutter='normal', move=True, guide_exptime=30,
                 retry_on_failed_astrometry=False,
-                mark_status=True, status_file='')
+                mark_status=True, status_file='', motion_flag=motion_flag)
 
             ret_lab = "MANUAL: run_ifu_science_seq status:"
 
@@ -3785,6 +3849,17 @@ class SEDm:
                     logger.info("Target Coords: %s",
                                 coords.to_string("hmsdms", sep=":"))
                 logger.info("decimal deg: %f, %f", RA, DEC)
+
+                if 'ra_rate' in obsdict and 'dec_rate' in obsdict:
+                    ra_rate = obsdict['ra_rate']
+                    dec_rate = obsdict['dec_rate']
+                    motion_flag = "1"
+                    non_sid = True
+                else:
+                    ra_rate = 0
+                    dec_rate = 0
+                    motion_flag = "0"
+                    non_sid = False
 
             else:
                 logger.error("target not found")
@@ -3832,6 +3907,7 @@ class SEDm:
             ret = self.run_rc_science_seq(
                 self.rc, shutter="normal", readout=.1, name=obsdict['target'],
                 test="", save_as=None, imgtype='Science', ra=RA, dec=DEC,
+                ra_rate = ra_rate, dec_rate = dec_rate,
                 equinox=2000, p60prid=p60prid, p60prpi=p60prpi,
                 email='', p60prnm=p60prnm, obj_id=obj_id,
                 objfilter='RC%s' % (obsdict['rcfilter']), imgset='NA',
@@ -3839,9 +3915,9 @@ class SEDm:
                 acq_readout=2.0, objtype='Transient',
                 obs_order=obsdict['rcfilter'], obs_exptime=obsdict['exptime'],
                 obs_repeat_filter=repeat_filter, repeat=n_sets,
-                non_sid_targ=False, move_during_readout=True, abpair=False,
+                non_sid_targ=non_sid, move_during_readout=True, abpair=False,
                 move=True, retry_on_failed_astrometry=False, mark_status=True,
-                status_file='')
+                status_file='', motion_flag=motion_flag)
 
             ret_lab = "MANUAL: run_rc_science_seq status:"
 
@@ -4134,8 +4210,8 @@ if __name__ == "__main__":
     # ret = x.run_manual_command("/home/sedm/SEDMv5/common_files/manual.json")
     # print(ret)
 
-    x.take_bias(x.ifu, N=1, test=' test')
-    # x.take_bias(x.rc, N=1)
+    # x.take_bias(x.ifu, N=1, test=' test')
+    # x.take_bias(x.rc, N=1, test=' test')
 
     # x.take_twilight(x.ifu, move=False, max_time=10)
     # x.take_twilight(x.rc, move=False, max_time=10)

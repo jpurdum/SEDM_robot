@@ -324,7 +324,7 @@ class Scheduler:
                                                   horizon=15 * u.degree,
                                                   which="next")
 
-    def _convert_row_to_json(self, row, fields=('name', 'ra', 'dec',
+    def _convert_row_to_json(self, row, do_neo=False, fields=('name', 'ra', 'dec',
                                                 'obj_id', 'req_id',
                                                 'email', 'objname', 'pi')):
         """
@@ -335,12 +335,21 @@ class Scheduler:
         """
         if fields is not None:
             pass
-
-        return dict(name=row.objname, p60prnm=row.name,
+        
+        if do_neo:
+            return dict(name=row.objname, p60prnm=row.name,
                     p60prid=row.p60prid, p60prpi=row.pi,
                     ra=row.ra, dec=row.dec, equinox=row.epoch,
                     req_id=row.req_id, obj_id=row.obj_id,
-                    obs_dict=row.obs_seq, marshal_id=row.marshal_id)
+                    obs_dict=row.obs_seq, marshal_id=row.marshal_id,
+                    non_sid_targ=True, typedesig='e')
+
+        else:
+            return dict(name=row.objname, p60prnm=row.name,
+                        p60prid=row.p60prid, p60prpi=row.pi,
+                        ra=row.ra, dec=row.dec, equinox=row.epoch,
+                        req_id=row.req_id, obj_id=row.obj_id,
+                        obs_dict=row.obs_seq, marshal_id=row.marshal_id)
 
     def simulate_night(self, start_time='', end_time='', do_focus=True,
                        do_standard=True, target_list=None,
@@ -377,7 +386,10 @@ class Scheduler:
             print("do_neo active")
             # Read in observable.json from ~/qye
             ret = self.populate_neo_request()
-            print("do_neo finished on %s" % ret['data']['object_id'])
+            if ret:
+                print("do_neo finished on %s" % ret['data']['object_id'])
+            else:
+                print("No NEOs to watch")
 
         if not isinstance(target_list, pd.DataFrame) and not target_list:
             print("sn: Making a new target list for night simulation")
@@ -447,6 +459,7 @@ class Scheduler:
                                                 do_sort=False,
                                                 do_neo=do_neo)
             print("got next observable target")
+
             # targets = self.remove_setting_targets(
             #       targets, start_time=current_time, end_time=end_time)
 
@@ -536,8 +549,14 @@ class Scheduler:
         start = time.time()
         # filter for proper type designation
         if do_neo:
-            target_df = target_df_in[target_df_in['typedesig'] == 'f' & target_df_in['typedesig'] == 'e']
-            print("got target_df in initialize_targets")
+            target_df_f = target_df_in[target_df_in['typedesig'] == 'f']
+            print("Here's the Fs")
+            print(target_df_f)
+            target_df_e = target_df_in[target_df_in['typedesig'] == 'e']
+            print("Here's the Es")
+            print(target_df_e)
+            target_df = pd.concat([target_df_f, target_df_e])
+            print("got target_df in initialize_target: %s" % target_df)
         else:
             target_df = target_df_in[target_df_in['typedesig'] == 'f']
 
@@ -679,11 +698,11 @@ class Scheduler:
                                                   ascending=list(sort_order))
         rej_html = ""
         target_reorder = False
-        # print(target_list['typedesig'])
 
         # loop over target list
         for row in target_list.itertuples():
-
+            if row.typedesig == 'e':
+                print("got one: %s" % str(row))
             # starting time of observation
             start = obsdatetime
             # add all requested exposures and overheads
@@ -769,6 +788,11 @@ class Scheduler:
                             print("gnot: Current FWHM (%.3f) > Requested FWHM "
                                   "(%.3f)" % (cur_fwhm['data'], row.max_fwhm))
                             continue
+                    
+                    # Skip target given 8s exposure from Fritz
+                    if int(row.obs_seq['ifu_exptime']) == 8:
+                        print("gnot: IFU exposure set to 8 seconds on Fritz for %s" % row.objname) 
+                        continue
 
                     # Here is our target!
                     moon_coords = get_moon(obsdatetime,
@@ -933,7 +957,7 @@ class Scheduler:
                         )
                         return row.req_id, (row.obs_seq, html)
                     elif return_type == 'json':
-                        targ = self._convert_row_to_json(row)
+                        targ = self._convert_row_to_json(row, do_neo=do_neo)
 
                         if save:
                             if not save_as:
@@ -971,7 +995,22 @@ class Scheduler:
                                                             ','.join(reas))
                         elif return_type == 'json' and len(num) >= 1:
                             rej_html += ','.join(num)
-
+                    elif 4 > row.priority >= 1.5:
+                        count = 1
+                        num = []
+                        reas = []
+                        for con in constraint:
+                            ret = astroplan.is_observable(
+                                [con], self.obs_site_plan,
+                                row.fixed_object, times=[start, finish],
+                                time_grid_resolution=0.1 * u.hour)
+                            print(ret, con)
+                            if not ret:
+                                num.append(str(count))
+                                reas.append(cons[count])
+                                print("gnot:", ret, cons[count])
+                            count += 1
+ 
             sys.stdout.flush()
 
         if return_type == 'json':
@@ -1143,8 +1182,10 @@ class Scheduler:
         :param iauname: (str) IAU designation for transient (optional)
         """
         # do we already exist in the db?
+        print("adding object %s" % name)
         object_id = self.ph_db.get_object_id_from_name(name)
         if object_id:
+            print(object_id[0][0])
             return object_id[0][0]
         else:
             # Required
@@ -1164,18 +1205,29 @@ class Scheduler:
                 print(message)
                 return object_id
 
-    def populate_neo_request(update=True):
+    def populate_neo_request(self, update=True):
         # populate db with observable_neo.json in ~/qye
-        with open('~/qye/observable_neo.json') as f:
-            data = json.load(f)
-
+        with open('/data/sedmdrp/qye/observable_neo.json') as f:
+            d = json.load(f)
+        if len(d['objects']) == 0:
+            print("empty dictionary for neos, switching to main belt")
+            with open('/data/sedmdrp/qye/observable_mba.json') as f:
+                d = json.load(f)
+                # just do one for now
+                d['objects'] = [d['objects'][0]]
+                
         for objct in d['objects']:
-            # has it been observed?
-            if objct['loaded_to_sedm'] != 0:
+            # has it already been loaded?
+            if objct['loaded_to_sedm'] == 2:
                 continue
             else:
                 if 'horizon_id' in objct:
-                    name = objct['horizon_id']
+                    if 'full_name' in objct:
+                        pos = objct['id'].find('(')
+                        print("full name: %s" % objct['id'][pos+1:-1])
+                        name = objct['id'][pos+1:-1]
+                    else:
+                        name = objct['horizon_id']
                     print("using horizon ID instead")
                 else:
                     name = objct['id']
@@ -1189,33 +1241,47 @@ class Scheduler:
             else:
                 cname = name
             print("cname is %s" % cname)
-            mag = objct['vmag']
+
+            # Get ephemeris for this object using JPL Horizons
+            try:
+                ephob = Horizons(id=cname, location='I41')
+                eph = ephob.ephemerides()
+            except:
+                print("Could not produce ephemeris for %s" % cname)
+                continue
+            try:
+                mag = eph['V'][0]
+            except KeyError:
+                mag = eph['M1'][0]
+            print("%s mag is %s" % (cname, mag))
             if 10.0 <= mag < 12.0:
                 exptime = 300
             elif 12.0 <= mag < 13.0:
                 exptime = 600
             elif 13.0 <= mag < 15.0:
                 exptime = 900
-            elif 15.0 <= mag < 18.0:
-                exptime = 1800
+            elif 15.0 <= mag <= 17.5:
+                exptime = 1200
+            elif mag > 17.5:
+                continue
             else:
                 exptime = 120
             print("using exptime %s" % exptime)
 
-            # Get ephemeris for this object using JPL Horizons
-            ephob = Horizons(id=cname, location='I41')
-            eph = ephobj.ephemerides()
-            if len(eph) == 0:
-                print("Could not produce ephemeris for %s" % cname)
-
-            ret = self.get_manual_request_id(name=cname, ra=eph['RA'][0], dec=eph['DEC'][0],
+            ret = self.get_manual_request_id(name=name, ra=eph['RA'][0], dec=eph['DEC'][0],
                                              priority=objct['priority'], exptime = exptime,
                                              allocation_id=20190326155547359, typedesig='e',
                                              update=update)
 
             print("get_manual_request_id status: %s" % ret)
-            return ret
 
+            objct['loaded_to_sedm'] = 1
+            print("changing loaded_to_sedm from 0 to 1 for %s" % cname)
+            if os.path.exists("/data/sedmdrp/qye/scheduler.lock*"):
+                time.sleep(30)
+            with open("/data/sedmdrp/qye/observable_neo.json", "w") as f:
+                json.dump(d, f)
+            return ret
 
     def get_manual_request_id(self, name="", typedesig="f", ra=None, dec=None,
                               epoch=2000., magnitude=None, priority=-1, exptime=180,
@@ -1233,24 +1299,32 @@ class Scheduler:
         :return: bool, id
         """
         start = time.time()
-
-        object_id = self.ph_db.get_object_id_from_name(name)
+        cname = name.replace('_', ' ')
+        print("Try this name: %s" % cname)
+        try:
+            object_id = self.ph_db.get_object_id_from_name(cname)
+        except:
+            object_id = False
+        print("this is object_id: %s" % object_id)
         if not object_id:
-            object_id = self.add_object(name=name, typedesig=typedesig,
+            object_id = self.add_object(name=cname, typedesig=typedesig,
                                         ra=ra, dec=dec, epoch=epoch,
                                         magnitude=magnitude)
             if object_id <= 0:
-                print("Could not add %s to SedmDb" % name)
+                print("Could not add %s to SedmDb" % cname)
                 return {'elaptime': time.time() - start,
                         'error': 'Unable to add object to SedmDb'}
         else:
             for obj in object_id:
-                if obj[1].lower() == name.lower():
+                if obj[1].lower() == cname.lower():
                     object_id = obj[0]
-                    break
+                    print("Object ID: %s, cname %s" % (object_id, cname))
+                else:
+                    continue
                 if update:
+                    # Update RA and DEC of moving target
                     pardic = {'id': object_id, 'ra': ra, 'dec': dec}
-                    resp = self.ph_db.update_object(pardic)
+                    resp = str(self.ph_db.update_object(pardic))
                     print("Update manual object status: %s" % resp)
         if not allocation_id:
             allocation_id = '20211011220000019'
@@ -1269,7 +1343,7 @@ class Scheduler:
             p60prpi = db_ret[1]
 
         start_date = datetime.datetime.utcnow()
-        end_date = start_date + datetime.timedelta(days=0.5)
+        end_date = start_date + datetime.timedelta(days=1)
         request_dict = {
             'obs_seq': obs_seq,
             'exptime': '{%s}' % int(exptime),
@@ -1289,7 +1363,19 @@ class Scheduler:
             'seq_repeats': '1',
             'seq_completed': '0'
         }
-        request_id = self.ph_db.add_request(request_dict)[0]
+        req_check = self.ph_db.get_from_request(values=['id'], where_dict={'object_id':object_id, 'status': 'PENDING'})
+        print("PENDING manual request ids: %s" % str(req_check))
+        if len(req_check) != 0:
+            print(req_check)
+            req_check = req_check[0][0]
+            request_dict['id'] = req_check
+            print(request_dict)
+            try:
+                request_id = self.ph_db.update_request(request_dict)[0]
+            except Exception as e:
+                print("error updating request: %s" % e)
+        else:
+            request_id = self.ph_db.add_request(request_dict)[0]
         return {
             'elaptime': time.time() - start,
             'data': {'object_id': object_id, 'request_id': request_id,
@@ -1411,7 +1497,7 @@ if __name__ == "__main__":
     # print(x.get_next_observable_target(return_type='json', do_moon_sep=False))
     # time.sleep(111)
     # print(x.simulate_night())
-    r = sched.simulate_night(do_focus=True, do_standard=True, do_neo=False)
+    r = sched.simulate_night(do_focus=True, do_standard=True, do_neo=True)
     data = open(scheduler_path, 'w')
     data.write(r)
     data.close()

@@ -58,7 +58,8 @@ def clean_up():
 def run_observing_loop(do_focus=True, do_standard=True,
                        do_calib=True, do_twilights=True,
                        lamps_off=False, clean_manual=True,
-                       temperature=None, use_winter=False):
+                       temperature=None, use_winter=False,
+                       do_neo=False):
 
     print("\nReSTARTING OBSERVING LOOP at ", datetime.datetime.utcnow())
     print("SEDM_robot version:", Version.__version__, "\n")
@@ -361,7 +362,7 @@ def run_observing_loop(do_focus=True, do_standard=True,
         # Proceed with normal queued observations
         try:
             # TODO: add do_fwhm=True after testing
-            ret = robot.sky.get_next_observable_target(return_type='json')
+            ret = robot.sky.get_next_observable_target(return_type='json', do_neo=do_neo)
             print('sky.get_next_observable_target status:\n', ret)
         except Exception as ex:
             print(str(ex), "ERROR getting target")
@@ -376,12 +377,12 @@ def run_observing_loop(do_focus=True, do_standard=True,
         # Try again to get next target
         if not ret:
             # TODO: add do_fwhm=True after testing
-            ret = robot.sky.get_next_observable_target(return_type='json')
+            ret = robot.sky.get_next_observable_target(return_type='json', do_neo=do_neo)
             print('sky.get_next_observable_target status (2):\n', ret)
 
         if not ('data' in ret and isinstance(ret['data'], dict)):
             # TODO: add do_fwhm=True after testing
-            ret = robot.sky.get_next_observable_target(return_type='json')
+            ret = robot.sky.get_next_observable_target(return_type='json', do_neo=False)
             print('sky.get_next_observable_target status (3):\n', ret)
 
         # did we get a valid target?
@@ -424,7 +425,10 @@ def run_observing_loop(do_focus=True, do_standard=True,
             ret = robot.observe_by_dict(obsdict)
             print('observe_by_dict status:\n', ret)
             if 'error' in ret:
-                print('Observation failed')
+                fail_ret = robot.sky.update_target_request(
+                        obsdict['req_id'], status='FAILED')
+                print('Observation failed. Status: \n', fail_ret)
+
             else:
                 # Add to done list
                 done_list.append(obsdict['req_id'])
@@ -592,7 +596,7 @@ if __name__ == "__main__":
                     run_observing_loop(lamps_off=lampsoff,
                                        temperature=args.temperature,
                                        use_winter=args.winter,
-                                       clean_manual=del_manual)
+                                       clean_manual=del_manual, do_neo=True)
                     lampsoff = False
                     del_manual = True
                 except Exception as e:
